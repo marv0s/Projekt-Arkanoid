@@ -1,50 +1,68 @@
 import pygame
 import random
+import sys
 
-# Inicializace pygame
+# Inicializace Pygame
 pygame.init()
+pygame.mixer.init()  # pokud chceš přidat zvuky později
 
 # Konstanty
 WIDTH, HEIGHT = 1000, 700
-BALL_SPEED = {"easy": 4, "medium": 6, "hard": 8}
+BALL_SPEEDS = {"easy": 4, "medium": 6, "hard": 8}
 PADDLE_SPEED = 10
 BLOCK_ROWS, BLOCK_COLS = 6, 10
 BLOCK_WIDTH, BLOCK_HEIGHT = WIDTH // BLOCK_COLS, 40
 LIVES = 3
+FPS = 60
 
 # Barvy
 WHITE = (255, 255, 255)
 RED = (255, 0, 0)
 BLUE = (0, 0, 255)
 PADDLE_COLOR = (50, 50, 200)
-SPECIAL_BLOCK_COLOR = (255, 215, 0)
-UNBREAKABLE_BLOCK_COLOR = (128, 128, 128)
+SPECIAL_BLOCK_COLOR = (255, 215, 0)  # zlatá
+UNBREAKABLE_BLOCK_COLOR = (128, 128, 128)  # šedá
 BACKGROUND_COLOR = (30, 30, 30)
+NORMAL_BLOCK_COLOR = (80, 200, 120)
 
-# Nastavení okna
+# Okno a fonty
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Arkanoid")
 font = pygame.font.Font(None, 36)
+big_font = pygame.font.Font(None, 72)
+clock = pygame.time.Clock()
+
+# Herní stav
+difficulty = None
+ball_speed = None
+
+# Pálka a míček (inicializovány při startu/resetu)
+paddle = pygame.Rect(WIDTH // 2 - 75, HEIGHT - 40, 150, 15)
+ball = pygame.Rect(WIDTH // 2 - 10, HEIGHT // 2, 20, 20)
+ball_dx = 0
+ball_dy = 0
+
+# Další proměnné
+blocks = []
+score = 0
+lives = LIVES
+level = 1
+paused = False
+running = True
 
 
-# Hlavní menu
-def show_menu():
+def show_difficulty_menu():
+    """Menu pro volbu obtížnosti (1/2/3). Vrací řetězec 'easy'|'medium'|'hard'."""
     screen.fill(BACKGROUND_COLOR)
-    title = font.render("ARKANOID", True, WHITE)
-    easy_text = font.render("1 - Snadná", True, WHITE)
-    medium_text = font.render("2 - Střední", True, WHITE)
-    hard_text = font.render("3 - Těžká", True, WHITE)
+    title = big_font.render("ARKANOID", True, WHITE)
+    info = font.render("1 - Snadná   2 - Střední   3 - Těžká    ESC = ukončit", True, WHITE)
     screen.blit(title, (WIDTH // 2 - title.get_width() // 2, HEIGHT // 4))
-    screen.blit(easy_text, (WIDTH // 2 - 50, HEIGHT // 2 - 30))
-    screen.blit(medium_text, (WIDTH // 2 - 50, HEIGHT // 2))
-    screen.blit(hard_text, (WIDTH // 2 - 50, HEIGHT // 2 + 30))
+    screen.blit(info, (WIDTH // 2 - info.get_width() // 2, HEIGHT // 2))
     pygame.display.update()
-
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit()
-                exit()
+                pygame.quit(); sys.exit()
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_1:
                     return "easy"
@@ -52,130 +70,268 @@ def show_menu():
                     return "medium"
                 if event.key == pygame.K_3:
                     return "hard"
+                if event.key == pygame.K_ESCAPE:
+                    pygame.quit(); sys.exit()
+        clock.tick(30)
 
 
-# Funkce pro vytvoření bloků
-def create_blocks():
-    blocks = []
+def show_start_screen():
+    """Start obrazovka - stisk ENTER spustí hru."""
+    screen.fill(BACKGROUND_COLOR)
+    title = big_font.render("ARKANOID", True, WHITE)
+    info = font.render("Stiskni ENTER ke hře, S pro volbu obtížnosti, ESC pro konec", True, WHITE)
+    screen.blit(title, (WIDTH // 2 - title.get_width() // 2, HEIGHT // 3))
+    screen.blit(info, (WIDTH // 2 - info.get_width() // 2, HEIGHT // 2))
+    pygame.display.update()
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RETURN:
+                    return
+                if event.key == pygame.K_s:
+                    global difficulty, ball_speed
+                    difficulty = show_difficulty_menu()
+                    ball_speed = BALL_SPEEDS[difficulty]
+                    return
+                if event.key == pygame.K_ESCAPE:
+                    pygame.quit(); sys.exit()
+        clock.tick(30)
+
+
+def create_blocks(level_num):
+    """Vytvoří pole bloků. Level může ovlivnit rozložení (více řad / hustší)."""
+    blocks_local = []
+    # Pravděpodobnosti: nezničitelný ~ 12%, speciální ~ 10%, normální ostatní
     for row in range(BLOCK_ROWS):
         for col in range(BLOCK_COLS):
-            rect = pygame.Rect(col * BLOCK_WIDTH, row * BLOCK_HEIGHT, BLOCK_WIDTH, BLOCK_HEIGHT)
-            rand_val = random.random()
-            if rand_val < 0.2:
-                color = UNBREAKABLE_BLOCK_COLOR
-                block_type = "unbreakable"
-            elif rand_val < 0.3:
-                color = SPECIAL_BLOCK_COLOR
-                block_type = "special"
+            x = col * BLOCK_WIDTH
+            y = 60 + row * BLOCK_HEIGHT  # odsazení od horní hrany
+            rect = pygame.Rect(x + 4, y + 4, BLOCK_WIDTH - 8, BLOCK_HEIGHT - 8)  # mezera mezi bloky
+            r = random.random()
+            # upravíme pravděpodobnosti podle levelu (vyšší level = víc tvrdších bloků)
+            unbreakable_thresh = 0.12 + (level_num - 1) * 0.02
+            special_thresh = 0.10
+            if r < unbreakable_thresh:
+                blocks_local.append((rect, UNBREAKABLE_BLOCK_COLOR, "unbreakable"))
+            elif r < unbreakable_thresh + special_thresh:
+                blocks_local.append((rect, SPECIAL_BLOCK_COLOR, "special"))
             else:
-                color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
-                block_type = "normal"
-            blocks.append((rect, color, block_type))
-    return blocks
+                # barevné variace normálních bloků
+                blocks_local.append((rect, NORMAL_BLOCK_COLOR, "normal"))
+    return blocks_local
 
 
-# Restart hry
+def reset_ball_and_paddle():
+    """Vrátí míček a pálku do výchozí pozice, ale nezmění skóre/lives."""
+    global paddle, ball, ball_dx, ball_dy
+    paddle.x = WIDTH // 2 - paddle.width // 2
+    paddle.y = HEIGHT - 40
+    ball.x = WIDTH // 2 - ball.width // 2
+    ball.y = HEIGHT // 2
+    # náhodný směr při startu
+    dir_x = random.choice([-1, 1])
+    ball_dx = dir_x * ball_speed * 0.6
+    ball_dy = -ball_speed
+
+
 def reset_game():
-    global ball, ball_dx, ball_dy, blocks, score, ball_speed, lives, level
-    paddle.x = WIDTH // 2 - 75
-    ball = pygame.Rect(WIDTH // 2 - 10, HEIGHT // 2, 20, 20)
-    ball_dx, ball_dy = ball_speed, -ball_speed
-    blocks = create_blocks()
+    """Úplný restart hry (po ztrátě všech životů nebo při novém startu)."""
+    global blocks, score, lives, level, ball_speed
+    if difficulty is None:
+        choose_difficulty = show_difficulty_menu()
+        set_difficulty(choose_difficulty)
+    blocks = create_blocks(1)
     score = 0
     lives = LIVES
     level = 1
+    reset_ball_and_paddle()
 
 
-# Výběr obtížnosti
-difficulty = show_menu()
-ball_speed = BALL_SPEED[difficulty]
-
-# Pálka
-paddle = pygame.Rect(WIDTH // 2 - 75, HEIGHT - 30, 150, 15)
-ball = pygame.Rect(WIDTH // 2 - 10, HEIGHT // 2, 20, 20)
-ball_dx, ball_dy = ball_speed, -ball_speed
-blocks = create_blocks()
-score = 0
-lives = LIVES
-level = 1
-paused = False
+def set_difficulty(diff):
+    """Nastaví difficulty a ball_speed."""
+    global difficulty, ball_speed
+    difficulty = diff
+    ball_speed = BALL_SPEEDS.get(diff, BALL_SPEEDS["medium"])
 
 
 def toggle_pause():
     global paused
     paused = not paused
-    while paused:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                exit()
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_p:
-                paused = False
 
 
-# Hlavní smyčka
-running = True
-clock = pygame.time.Clock()
+def reflect_ball_off_rect(ball, rect):
+    """
+    Vylepšená kolize: zjistí, odkud došlo ke kolizi (horní/dolní/levá/pravá)
+    a podle toho otočí dx nebo dy.
+    """
+    overlap_left = ball.right - rect.left
+    overlap_right = rect.right - ball.left
+    overlap_top = ball.bottom - rect.top
+    overlap_bottom = rect.bottom - ball.top
+
+    # najdi nejmenší překrytí -> to je strana kolize
+    min_overlap = min(overlap_left, overlap_right, overlap_top, overlap_bottom)
+    if min_overlap == overlap_left:
+        return -abs(ball_dx), ball_dy  # srážka zleva -> odraz doleva
+    if min_overlap == overlap_right:
+        return abs(ball_dx), ball_dy
+    if min_overlap == overlap_top:
+        return ball_dx, -abs(ball_dy)
+    return ball_dx, abs(ball_dy)
+
+
+# --- Příprava před spuštěním ---
+set_difficulty("medium")  # výchozí
+show_start_screen()
+reset_game()
+
+# Hlavní herní smyčka
 while running:
-    clock.tick(60)
+    clock.tick(FPS)
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_p:
                 toggle_pause()
+            if event.key == pygame.K_ESCAPE:
+                running = False
+            if event.key == pygame.K_r:
+                # restart aktuální úrovně / celé hry
+                reset_game()
+            if event.key == pygame.K_s:
+                # změna obtížnosti během pauzy/startu
+                set_difficulty(show_difficulty_menu())
+                reset_game()
 
+    if paused:
+        # vykreslí pauzu
+        pause_text = big_font.render("PAUZA", True, WHITE)
+        screen.blit(pause_text, (WIDTH // 2 - pause_text.get_width() // 2, HEIGHT // 2 - 50))
+        info = font.render("P pro pokračování, R restart, S změnit obtížnost", True, WHITE)
+        screen.blit(info, (WIDTH // 2 - info.get_width() // 2, HEIGHT // 2 + 20))
+        pygame.display.update()
+        continue
+
+    # Ovládání pálky
     keys = pygame.key.get_pressed()
     if keys[pygame.K_LEFT] and paddle.left > 0:
         paddle.x -= PADDLE_SPEED
     if keys[pygame.K_RIGHT] and paddle.right < WIDTH:
         paddle.x += PADDLE_SPEED
 
+    # Pohyb míčku
     ball.x += ball_dx
     ball.y += ball_dy
 
-    if ball.left <= 0 or ball.right >= WIDTH:
-        ball_dx = -ball_dx
+    # Kolize se stěnami
+    if ball.left <= 0:
+        ball.left = 0
+        ball_dx = abs(ball_dx)
+    if ball.right >= WIDTH:
+        ball.right = WIDTH
+        ball_dx = -abs(ball_dx)
     if ball.top <= 0:
-        ball_dy = -ball_dy
+        ball.top = 0
+        ball_dy = abs(ball_dy)
 
-    if ball.colliderect(paddle):
+    # Kolize s pálkou (s přesnějším odrazem podle místa nárazu)
+    if ball.colliderect(paddle) and ball_dy > 0:
+        # offset: -1 (levá hrana) ... 0 (střed) ... +1 (pravá hrana)
         offset = (ball.centerx - paddle.centerx) / (paddle.width / 2)
         ball_dx = ball_speed * offset
-        ball_dy = -ball_speed
+        ball_dy = -abs(ball_speed)
 
-    for block, color, block_type in blocks[:]:
-        if ball.colliderect(block):
+    # Kolize s bloky
+    # iterujeme přes kopii seznamu, protože můžeme mazat
+    for block_tuple in blocks[:]:
+        block_rect, block_color, block_type = block_tuple
+        if ball.colliderect(block_rect):
+            # Pokud je nezničitelný, necháme jej, jinak ho odstraníme a přičteme skóre
             if block_type != "unbreakable":
-                blocks.remove((block, color, block_type))
-                score += 50 if block_type == "special" else 10
-                ball_dy = -ball_dy
+                blocks.remove(block_tuple)
                 if block_type == "special":
-                    ball_speed += 0.5
+                    score += 50
+                    # speciální efekt: míček zrychlí trochu
+                    # zachováme směr, jen upravíme velikost vektoru
+                    sign_x = 1 if ball_dx >= 0 else -1
+                    sign_y = 1 if ball_dy >= 0 else -1
+                    speed = min(ball_speed * 1.6, 12)
+                    ball_dx = sign_x * abs(ball_dx) * 1.05
+                    ball_dy = sign_y * abs(ball_dy) * 1.05
+                else:
+                    score += 10
             else:
-                if abs(ball.right - block.left) < 10 or abs(ball.left - block.right) < 10:
-                    ball_dx = -ball_dx
-                if abs(ball.bottom - block.top) < 10 or abs(ball.top - block.bottom) < 10:
-                    ball_dy = -ball_dy
-            break
+                # nezničitelný blok - odraz bez odstranění
+                pass
 
-    if ball.bottom >= HEIGHT:
+            # odraz míčku - použij funkci, aby nebyly "přilepené" případy
+            # upravíme dx/dy podle strany kolize
+            # jednoduché řešení: invertuj podle vert/hor
+            dx_before, dy_before = ball_dx, ball_dy
+            ball_dx, ball_dy = reflect_ball_off_rect(ball, block_rect)
+            # zaručíme, že se míček nevleze do bloku po odrazu
+            if abs(ball_dx) < 0.5:
+                ball_dx = 0.5 * (1 if dx_before >= 0 else -1)
+            if abs(ball_dy) < 0.5:
+                ball_dy = 0.5 * (1 if dy_before >= 0 else -1)
+            break  # zpracuj pouze jednu kolizi za frame
+
+    # Kontrola, jestli míček spadl pod pálku
+    if ball.top > HEIGHT:
         lives -= 1
-        if lives == 0:
+        if lives <= 0:
+            # game over -> krátká pauza a restart celé hry
+            screen.fill(BACKGROUND_COLOR)
+            go = big_font.render("GAME OVER", True, RED)
+            screen.blit(go, (WIDTH // 2 - go.get_width() // 2, HEIGHT // 2 - 40))
+            info = font.render(f"Skóre: {score}. Restart za chvíli...", True, WHITE)
+            screen.blit(info, (WIDTH // 2 - info.get_width() // 2, HEIGHT // 2 + 30))
+            pygame.display.update()
             pygame.time.delay(2000)
             reset_game()
+            continue
         else:
-            ball.x, ball.y = WIDTH // 2 - 10, HEIGHT // 2
-            ball_dx, ball_dy = ball_speed, -ball_speed
+            # reset na střed, pokračuj
+            reset_ball_and_paddle()
+            pygame.time.delay(600)
+            continue
 
+    # Pokud nejsou žádné bloky -> další úroveň
+    if not blocks:
+        level += 1
+        # menší vylepšení: každá úroveň přidá pár řad nebo zvýší rychlost
+        blocks = create_blocks(level)
+        # lehce zvýšíme rychlost míčku s každou úrovní (ale s limitem)
+        ball_speed = min(ball_speed * 1.08, 14)
+        reset_ball_and_paddle()
+        pygame.time.delay(600)
+
+    # Vykreslení
     screen.fill(BACKGROUND_COLOR)
-    pygame.draw.rect(screen, PADDLE_COLOR, paddle, border_radius=5)
+    # pálka
+    pygame.draw.rect(screen, PADDLE_COLOR, paddle, border_radius=6)
+    # míček
     pygame.draw.ellipse(screen, RED, ball)
-    for block, color, block_type in blocks:
-        pygame.draw.rect(screen, color, block, border_radius=5)
+    # bloky
+    for b_rect, b_color, b_type in blocks:
+        pygame.draw.rect(screen, b_color, b_rect, border_radius=6)
+        if b_type == "unbreakable":
+            # vizuální pruhy pro nezničitelné
+            inner = b_rect.inflate(-10, -10)
+            pygame.draw.rect(screen, (100, 100, 100), inner, border_radius=4)
 
-    score_text = font.render(f"Skóre: {score}  Životy: {lives}  Úroveň: {level}", True, WHITE)
-    screen.blit(score_text, (10, 10))
+    # HUD (skóre, životy, úroveň, obtížnost)
+    hud = font.render(f"Skóre: {score}    Životy: {lives}    Úroveň: {level}    Obtížnost: {difficulty}", True, WHITE)
+    screen.blit(hud, (10, 10))
+
+    # tipy (pauza, restart)
+    tips = font.render("P - pauza  R - restart  S - změnit obtížnost  ESC - konec", True, (180, 180, 180))
+    screen.blit(tips, (10, HEIGHT - 30))
+
     pygame.display.update()
 
+# Ukončení
 pygame.quit()
