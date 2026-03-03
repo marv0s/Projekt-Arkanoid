@@ -1,0 +1,339 @@
+import pygame
+import random
+import sys
+import sqlite3
+
+# Inicializace Pygame
+pygame.init()
+
+# Konstanty
+WIDTH, HEIGHT = 1000, 700
+BALL_SPEEDS = {"easy": 4, "medium": 6, "hard": 8}
+PADDLE_SPEED = 10
+BLOCK_ROWS, BLOCK_COLS = 6, 10
+BLOCK_WIDTH, BLOCK_HEIGHT = WIDTH // BLOCK_COLS, 40
+LIVES = 3
+FPS = 60
+
+# Barvy
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+RED = (255, 0, 0)
+BLUE = (0, 0, 255)
+PADDLE_COLOR = (50, 50, 200)
+SPECIAL_BLOCK_COLOR = (255, 215, 0)
+UNBREAKABLE_BLOCK_COLOR = (128, 128, 128)
+BACKGROUND_COLOR = (30, 30, 30)
+NORMAL_BLOCK_COLOR = (80, 200, 120)
+
+# Okno a fonty
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Arkanoid Pro - Relační DB")
+font = pygame.font.Font(None, 36)
+big_font = pygame.font.Font(None, 72)
+clock = pygame.time.Clock()
+
+
+# --- DATABÁZOVÉ FUNKCE (PŮVODNÍ) ---
+
+def init_db():
+    conn = sqlite3.connect('arkanoid_pro.db')
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA foreign_keys = ON;")
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS difficulties (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, ball_speed_multiplier FLOAT)''')
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS players (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    cursor.execute(
+        '''CREATE TABLE IF NOT EXISTS games (id INTEGER PRIMARY KEY AUTOINCREMENT, player_id INTEGER REFERENCES players(id), difficulty_id INTEGER REFERENCES difficulties(id), total_score INTEGER DEFAULT 0, max_level_reached INTEGER DEFAULT 1, lives_remaining INTEGER, played_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    cursor.execute("SELECT COUNT(*) FROM difficulties")
+    if cursor.fetchone()[0] == 0:
+        cursor.executemany("INSERT INTO difficulties (name, ball_speed_multiplier) VALUES (?, ?)",
+                           [('easy', 1.0), ('medium', 1.5), ('hard', 2.0)])
+    conn.commit()
+    conn.close()
+
+
+def save_to_db_v2(username, final_score, final_level, diff_name, lives_left):
+    try:
+        conn = sqlite3.connect('arkanoid_pro.db')
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA foreign_keys = ON;")
+        cursor.execute("INSERT OR IGNORE INTO players (username) VALUES (?)", (username,))
+        cursor.execute("SELECT id FROM players WHERE username = ?", (username,))
+        p_id = cursor.fetchone()[0]
+        cursor.execute("SELECT id FROM difficulties WHERE name = ?", (diff_name,))
+        d_id = cursor.fetchone()[0]
+        cursor.execute(
+            '''INSERT INTO games (player_id, difficulty_id, total_score, max_level_reached, lives_remaining) VALUES (?, ?, ?, ?, ?)''',
+            (p_id, d_id, final_score, final_level, lives_left))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"Chyba DB: {e}")
+
+
+def get_top_scores():
+    try:
+        conn = sqlite3.connect('arkanoid_pro.db')
+        cursor = conn.cursor()
+        query = '''
+            SELECT p.username, g.total_score, g.max_level_reached, d.name
+            FROM games g
+            JOIN players p ON g.player_id = p.id
+            JOIN difficulties d ON g.difficulty_id = d.id
+            ORDER BY g.total_score DESC
+            LIMIT 10
+        '''
+        cursor.execute(query)
+        data = cursor.fetchall()
+        conn.close()
+        return data
+    except:
+        return []
+
+
+# --- UI FUNKCE (PŮVODNÍ) ---
+
+def get_nickname_input():
+    nick = ""
+    input_active = True
+    while input_active:
+        screen.fill(BACKGROUND_COLOR)
+        prompt = font.render("KONEC HRY! Zadej svůj nickname a stiskni ENTER:", True, WHITE)
+        txt_surface = big_font.render(nick, True, SPECIAL_BLOCK_COLOR)
+        screen.blit(prompt, (WIDTH // 2 - prompt.get_width() // 2, HEIGHT // 3))
+        screen.blit(txt_surface, (WIDTH // 2 - txt_surface.get_width() // 2, HEIGHT // 2))
+        pygame.display.flip()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RETURN:
+                    return nick if nick.strip() != "" else "Anonym"
+                elif event.key == pygame.K_BACKSPACE:
+                    nick = nick[:-1]
+                else:
+                    if len(nick) < 15: nick += event.unicode
+    return nick
+
+
+def show_leaderboard():
+    waiting = True
+    top_data = get_top_scores()
+    while waiting:
+        screen.fill(BACKGROUND_COLOR)
+        title = big_font.render("TABULKA VÍTĚZŮ", True, SPECIAL_BLOCK_COLOR)
+        screen.blit(title, (WIDTH // 2 - title.get_width() // 2, 50))
+        header = font.render(f"{'Jméno':<15} {'Skóre':<10} {'Lvl':<5} {'Obtížnost':<10}", True, WHITE)
+        screen.blit(header, (WIDTH // 2 - 250, 150))
+        pygame.draw.line(screen, WHITE, (WIDTH // 2 - 250, 180), (WIDTH // 2 + 250, 180), 2)
+        y_offset = 200
+        for i, (name, score, lvl, diff) in enumerate(top_data):
+            color = SPECIAL_BLOCK_COLOR if i == 0 else WHITE
+            row_text = f"{name:<15} {score:<10} {lvl:<5} {diff:<10}"
+            row_surf = font.render(row_text, True, color)
+            screen.blit(row_surf, (WIDTH // 2 - 250, y_offset))
+            y_offset += 35
+        info = font.render("Stiskni libovolnou klávesu pro návrat", True, (150, 150, 150))
+        screen.blit(info, (WIDTH // 2 - info.get_width() // 2, HEIGHT - 50))
+        pygame.display.flip()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if event.type == pygame.KEYDOWN: waiting = False
+        clock.tick(30)
+
+
+# --- HERNÍ LOGIKA (UPRAVENO PROTI ZASEKÁVÁNÍ) ---
+
+def reflect_ball_smart(ball_rect, target_rect, dx, dy):
+    """Pomocná funkce: Odrazí míček a teleportuje ho na hranu, aby se nezasekl."""
+    overlap_left = ball_rect.right - target_rect.left
+    overlap_right = target_rect.right - ball_rect.left
+    overlap_top = ball_rect.bottom - target_rect.top
+    overlap_bottom = target_rect.bottom - ball_rect.top
+
+    min_overlap = min(overlap_left, overlap_right, overlap_top, overlap_bottom)
+
+    if min_overlap == overlap_left:
+        ball_rect.right = target_rect.left
+        dx = -abs(dx)
+    elif min_overlap == overlap_right:
+        ball_rect.left = target_rect.right
+        dx = abs(dx)
+    elif min_overlap == overlap_top:
+        ball_rect.bottom = target_rect.top
+        dy = -abs(dy)
+    elif min_overlap == overlap_bottom:
+        ball_rect.top = target_rect.bottom
+        dy = abs(dy)
+
+    # Pojistka: mírně náhodně změníme úhel, aby míček nelétal věčně po stejné přímce
+    dx += random.uniform(-0.1, 0.1)
+    return dx, dy
+
+
+difficulty = None
+ball_speed = None
+paddle = pygame.Rect(WIDTH // 2 - 75, HEIGHT - 40, 150, 15)
+ball = pygame.Rect(WIDTH // 2 - 10, HEIGHT // 2, 20, 20)
+ball_dx, ball_dy = 0, 0
+blocks, score, lives, level = [], 0, LIVES, 1
+paused, running = False, True
+
+
+def show_difficulty_menu():
+    screen.fill(BACKGROUND_COLOR)
+    title = big_font.render("ARKANOID", True, WHITE)
+    info = font.render("1 - Easy   2 - Medium   3 - Hard", True, WHITE)
+    screen.blit(title, (WIDTH // 2 - title.get_width() // 2, HEIGHT // 4))
+    screen.blit(info, (WIDTH // 2 - info.get_width() // 2, HEIGHT // 2))
+    pygame.display.update()
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_1: return "easy"
+                if event.key == pygame.K_2: return "medium"
+                if event.key == pygame.K_3: return "hard"
+        clock.tick(30)
+
+
+def show_start_screen():
+    screen.fill(BACKGROUND_COLOR)
+    title = big_font.render("ARKANOID", True, WHITE)
+    info = font.render("ENTER: Start   S: Obtížnost   L: Leaderboard", True, WHITE)
+    screen.blit(title, (WIDTH // 2 - title.get_width() // 2, HEIGHT // 3))
+    screen.blit(info, (WIDTH // 2 - info.get_width() // 2, HEIGHT // 2))
+    pygame.display.update()
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT: pygame.quit(); sys.exit()
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RETURN: return
+                if event.key == pygame.K_l: show_leaderboard(); show_start_screen(); return
+                if event.key == pygame.K_s:
+                    global difficulty, ball_speed
+                    difficulty = show_difficulty_menu()
+                    ball_speed = BALL_SPEEDS[difficulty]
+                    show_start_screen()
+                    return
+
+
+def set_difficulty(diff):
+    global difficulty, ball_speed
+    difficulty = diff
+    ball_speed = BALL_SPEEDS.get(diff, BALL_SPEEDS["medium"])
+
+
+def create_blocks(level_num):
+    blocks_local = []
+    for row in range(BLOCK_ROWS):
+        for col in range(BLOCK_COLS):
+            x, y = col * BLOCK_WIDTH, 60 + row * BLOCK_HEIGHT
+            rect = pygame.Rect(x + 4, y + 4, BLOCK_WIDTH - 8, BLOCK_HEIGHT - 8)
+            r = random.random()
+            if r < 0.12:
+                blocks_local.append((rect, UNBREAKABLE_BLOCK_COLOR, "unbreakable"))
+            elif r < 0.22:
+                blocks_local.append((rect, SPECIAL_BLOCK_COLOR, "special"))
+            else:
+                blocks_local.append((rect, NORMAL_BLOCK_COLOR, "normal"))
+    return blocks_local
+
+
+def reset_ball_and_paddle():
+    global ball_dx, ball_dy
+    paddle.x = WIDTH // 2 - paddle.width // 2
+    ball.center = (WIDTH // 2, HEIGHT // 2)
+    ball_dx, ball_dy = random.choice([-1, 1]) * ball_speed * 0.6, -ball_speed
+
+
+def reset_game():
+    global blocks, score, lives, level
+    if difficulty is None: set_difficulty(show_difficulty_menu())
+    blocks, score, lives, level = create_blocks(1), 0, LIVES, 1
+    reset_ball_and_paddle()
+
+
+# --- START ---
+init_db()
+set_difficulty("medium")
+show_start_screen()
+reset_game()
+
+while running:
+    clock.tick(FPS)
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT: running = False
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_p: paused = not paused
+            if event.key == pygame.K_r: reset_game()
+
+    if paused:
+        pause_text = font.render("PAUZA - P pro pokračování", True, WHITE)
+        screen.blit(pause_text, (WIDTH // 2 - 150, HEIGHT // 2))
+        pygame.display.flip()
+        continue
+
+    keys = pygame.key.get_pressed()
+    if keys[pygame.K_LEFT] and paddle.left > 0: paddle.x -= PADDLE_SPEED
+    if keys[pygame.K_RIGHT] and paddle.right < WIDTH: paddle.x += PADDLE_SPEED
+
+    # Pohyb míčku s fixací hran (zamezení vypadnutí z okna)
+    ball.x += ball_dx
+    if ball.left <= 0:
+        ball.left = 0
+        ball_dx = abs(ball_dx)
+    elif ball.right >= WIDTH:
+        ball.right = WIDTH
+        ball_dx = -abs(ball_dx)
+
+    ball.y += ball_dy
+    if ball.top <= 0:
+        ball.top = 0
+        ball_dy = abs(ball_dy)
+
+    # Kolize s pálkou (původní tvá logika s opravou proti zaseknutí)
+    if ball.colliderect(paddle) and ball_dy > 0:
+        offset = (ball.centerx - paddle.centerx) / (paddle.width / 2)
+        ball_dx, ball_dy = ball_speed * offset, -abs(ball_speed)
+        ball.bottom = paddle.top
+
+    # Kolize s bloky (vylepšená tvá logika pomocí reflect_ball_smart)
+    for block_tuple in blocks[:]:
+        rect, color, b_type = block_tuple
+        if ball.colliderect(rect):
+            if b_type != "unbreakable":
+                blocks.remove(block_tuple)
+                score += 50 if b_type == "special" else 10
+            ball_dx, ball_dy = reflect_ball_smart(ball, rect, ball_dx, ball_dy)
+            break
+
+    if ball.top > HEIGHT:
+        lives -= 1
+        if lives <= 0:
+            name = get_nickname_input()
+            save_to_db_v2(name, score, level, difficulty, 0)
+            show_leaderboard()
+            reset_game()
+        else:
+            reset_ball_and_paddle()
+            pygame.time.delay(600)
+
+    # Přechod do dalšího levelu (pokud zbývají jen šedé bloky nebo žádné)
+    if not any(b[2] != "unbreakable" for b in blocks):
+        level += 1
+        blocks = create_blocks(level)
+        ball_speed = min(ball_speed * 1.05, 12)
+        reset_ball_and_paddle()
+
+    screen.fill(BACKGROUND_COLOR)
+    pygame.draw.rect(screen, PADDLE_COLOR, paddle, border_radius=6)
+    pygame.draw.ellipse(screen, RED, ball)
+    for r, c, t in blocks: pygame.draw.rect(screen, c, r, border_radius=4)
+
+    hud = font.render(f"Skóre: {score} | Level: {level} | Životy: {lives}", True, WHITE)
+    screen.blit(hud, (10, 10))
+    pygame.display.flip()
+
+pygame.quit()
